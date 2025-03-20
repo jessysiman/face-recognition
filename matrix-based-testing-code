@@ -1,0 +1,160 @@
+#====================================================================================================================
+#                                BPNN MATRIX BASED TESTING PROGRAM (40 X 40)
+#====================================================================================================================
+# Import necessary libraries
+import numpy as np
+import pandas as pd
+import os
+from PIL import Image
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.utils import to_categorical
+
+from google.colab import drive
+from IPython.display import display, Image as IPImage
+
+# Mount Google Drive to access the model and label_dict but we won't save any output there
+drive.mount('/content/drive', force_remount=True)
+
+# Define input directories
+testing_data_path = '/content/drive/MyDrive/MML_Final_Project/Testing_Database_Processed'
+model_save_dir = '/content/drive/MyDrive/MML_Final_Project/BPNN_MatrixBased_Training Program Output'
+model_load_path = os.path.join(model_save_dir, 'trained_bpnntf_model.h5')
+label_dict_path = os.path.join(model_save_dir, 'label_dict.csv')
+
+# Define image dimensions
+img_height, img_width = 40, 40
+input_size = img_height * img_width  # 1600
+
+#====================================================================================================================
+#                                     CONFIGURATION SECTION
+#====================================================================================================================
+# Editable parameters
+num_images_per_row = 4  # Number of images per row in the grid
+#====================================================================================================================
+
+# Load label_dict from CSV
+try:
+    label_df = pd.read_csv(label_dict_path)
+    label_dict = dict(zip(label_df['Label'], label_df['Person']))
+    print(f"Label dictionary loaded from {label_dict_path}")
+except FileNotFoundError:
+    print(f"Error: '{label_dict_path}' not found. Please ensure the training program has been run successfully.")
+    label_dict = {}
+
+if label_dict:
+    # Create reverse mapping for labels
+    label_dict_inv = {v: k for k, v in label_dict.items()}
+
+    # Function to load images (No preprocessing)
+    def load_images(data_path, person_to_label, img_height=40, img_width=40):
+        X = []
+        y = []
+        image_paths = []
+        image_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif')
+
+        for person_name in os.listdir(data_path):
+            person_folder = os.path.join(data_path, person_name)
+            if not os.path.isdir(person_folder):
+                continue
+
+            for category_name in os.listdir(person_folder):
+                category_folder = os.path.join(person_folder, category_name)
+                if not os.path.isdir(category_folder):
+                    continue
+
+                for image_name in os.listdir(category_folder):
+                    if not image_name.lower().endswith(image_extensions):
+                        continue
+                    image_path = os.path.join(category_folder, image_name)
+                    try:
+                        with Image.open(image_path) as img:
+                            img_array = np.array(img).flatten() / 255.0
+                            if img_array.shape[0] != img_height * img_width:
+                                print(f"Skipping {image_path}: Incorrect image size.")
+                                continue
+                            X.append(img_array)
+                            y.append(person_to_label.get(person_name, -1))
+                            image_paths.append(image_path)
+                    except Exception as e:
+                        print(f"Error loading {image_path}: {e}")
+
+        X = np.array(X)
+        y = np.array(y)
+        return X, y, image_paths
+
+    # Load testing data
+    X_test, y_test, test_image_paths = load_images(testing_data_path, label_dict_inv, img_height, img_width)
+
+    # Filter out any samples with label -1 (if any)
+    test_filter = y_test != -1
+    X_test, y_test = X_test[test_filter], y_test[test_filter]
+
+    # One-hot encode labels
+    num_classes = len(label_dict)
+    y_test_encoded = to_categorical(y_test, num_classes=num_classes)
+
+    # Load the trained model
+    try:
+        model = load_model(model_load_path)
+        print(f"Model loaded from {model_load_path}")
+    except FileNotFoundError:
+        print(f"Error: '{model_load_path}' not found. Please ensure the training program has been run and the model is saved.")
+        model = None
+
+    if model:
+        # Predict on test data
+        y_pred_probs = model.predict(X_test)
+        y_pred = np.argmax(y_pred_probs, axis=1)
+        y_true = y_test
+
+        # Calculate overall recognition rate
+        overall_accuracy = np.mean(y_pred == y_true) * 100
+        print(f"\nOverall Recognition Rate: {overall_accuracy:.2f}%")
+
+        # Calculate per-person recognition rate
+        per_person_stats = {}
+        for label in range(num_classes):
+            person_name = label_dict[label]
+            indices = np.where(y_true == label)[0]
+            total = len(indices)
+            correct = np.sum(y_pred[indices] == label)
+            accuracy = (correct / total) * 100 if total > 0 else 0
+            per_person_stats[person_name] = accuracy
+            print(f"Recognition Rate for {person_name}: {accuracy:.2f}%")
+
+        # Function to display all test images in a grid
+        def display_all_predictions_grid(X, y_true, y_pred, label_dict, images_per_row=4):
+            num_images = len(X)
+            num_rows = int(np.ceil(num_images / images_per_row))
+
+            plt.figure(figsize=(images_per_row * 2, num_rows * 2))
+
+            for i in range(num_images):
+                plt.subplot(num_rows, images_per_row, i + 1)
+                image = X[i].reshape(img_height, img_width)
+                plt.imshow(image, cmap='gray')
+                plt.axis('off')
+                plt.title(f"True: {label_dict[y_true[i]]}\nPred: {label_dict[y_pred[i]]}", fontsize=8)
+
+            plt.tight_layout()
+            plt.show()
+            print("All test images have been displayed in a grid.")
+
+        # Display all test images in a grid of 4 images per row
+        display_all_predictions_grid(X_test, y_true, y_pred, label_dict, images_per_row=num_images_per_row)
+
+        # Generate and display confusion matrix
+        cm = confusion_matrix(y_true, y_pred)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=label_dict.values(),
+                    yticklabels=label_dict.values())
+        plt.xlabel('Predicted')
+        plt.ylabel('True')
+        plt.title('Confusion Matrix')
+        plt.show()
