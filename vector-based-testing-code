@@ -1,0 +1,196 @@
+#====================================================================================================================
+#                                       TESTING PROGRAM (40 X 40)
+#====================================================================================================================
+import numpy as np                        # For numerical computations and array manipulations
+import os                                 # For directory and file path management
+from PIL import Image                     # For image loading and processing
+import matplotlib.pyplot as plt           # For displaying images and plotting
+from google.colab import drive            # For mounting Google Drive in Google Colab
+import csv                                # For loading weights and biases from CSV
+import math
+
+# Step 0: Initialization ============================================================================================
+drive.mount('/content/drive', force_remount=True)  # Ensure Drive is mounted
+
+# Set paths to testing dataset (with categories) and weights/biases directory
+testing_data_path = '/content/drive/MyDrive/MML_Final_Project/Testing_Database_Processed'
+weights_biases_path = '/content/drive/MyDrive/MML_Final_Project/BPNN_VectorBased_Training Program Output'
+
+# Define image dimensions
+img_height, img_width = 40, 40
+
+# Step 1: Load Testing Data (revised to handle categories and persons) ==============================================
+def load_label_dict(filename):
+    label_dict = {}
+    with open(filename, 'r') as csvfile:
+        reader = csv.reader(csvfile)
+        next(reader)  # Skip header
+        for row in reader:
+            if len(row) != 2:
+                continue
+            label, person = row
+            label_dict[int(label)] = person
+    return label_dict
+
+def load_testing_data(testing_path, label_dict):
+    X_test = []
+    y_test = []
+    image_paths = []
+    image_extensions = ('.png', '.jpg')
+
+    # Create a reverse label dict to map person name to label
+    person_to_label = {v: k for k, v in label_dict.items()}
+
+    # Loop over each person folder
+    for person_name in os.listdir(testing_path):
+        person_folder = os.path.join(testing_path, person_name)
+        if os.path.isdir(person_folder) and person_name in person_to_label:
+            person_label = person_to_label[person_name]
+
+            # Loop over each category folder
+            for category_name in os.listdir(person_folder):
+                category_folder = os.path.join(person_folder, category_name)
+                if os.path.isdir(category_folder):
+                    # Load images from this category
+                    for image_name in os.listdir(category_folder):
+                        if not image_name.lower().endswith(image_extensions):
+                            continue
+                        image_path = os.path.join(category_folder, image_name)
+                        try:
+                            img = Image.open(image_path)
+
+                            # Convert to grayscale
+                            if img.mode != 'L':
+                                img = img.convert('L')
+
+                            # Resize if necessary
+                            if img.size != (img_width, img_height):
+                                img = img.resize((img_width, img_height))
+
+                            img_array = np.array(img).flatten() / 255.0
+
+                            if img_array.shape[0] != img_height * img_width:
+                                print(f"Unexpected array length for image {image_path}")
+                                continue
+
+                            X_test.append(img_array)
+                            y_test.append(person_label)
+                            image_paths.append(image_path)
+                        except Exception as e:
+                            print(f"Error processing image {image_path}: {e}")
+
+    X_test = np.array(X_test)
+    y_test = np.array(y_test)
+    return X_test, y_test, image_paths
+
+# Step 2: Load label_dict and Testing Data ==========================================================================
+label_dict = load_label_dict(os.path.join(weights_biases_path, 'label_dict.csv'))
+X_test, y_test, image_paths = load_testing_data(testing_data_path, label_dict)
+
+# Step 3: Define Activation Function ================================================================================
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+# Step 4: Load Weights and Biases from CSV ==========================================================================
+def load_csv_as_array(filename):
+    return np.loadtxt(filename, delimiter=",")
+
+required_files = ['v.csv', 'v0.csv', 'w.csv', 'w0.csv', 'label_dict.csv']
+for file in required_files:
+    file_path = os.path.join(weights_biases_path, file)
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"Required file '{file}' not found in '{weights_biases_path}'.")
+
+v = load_csv_as_array(os.path.join(weights_biases_path, 'v.csv'))
+v0 = load_csv_as_array(os.path.join(weights_biases_path, 'v0.csv'))
+w = load_csv_as_array(os.path.join(weights_biases_path, 'w.csv'))
+w0 = load_csv_as_array(os.path.join(weights_biases_path, 'w0.csv'))
+
+# Step 5: Define Predict Function ===================================================================================
+def predict(xi):
+    z_in = np.dot(xi, v) + v0
+    z = sigmoid(z_in)
+
+    y_in = np.dot(z, w) + w0
+    y = sigmoid(y_in)
+
+    y_before_round = y.flatten()
+    y_before_round_rounded = np.round(y_before_round, 2)
+
+    y_after_round = np.where(y_before_round >= 0.5, 1, 0)
+    predicted_label = np.argmax(y_after_round)
+    predicted_name = label_dict[predicted_label]
+
+    return y_before_round_rounded, y_after_round, predicted_name
+
+# Step 6: Display Testing Images with Predictions and Compute Recognition Rates =====================================
+num_images = len(X_test)
+cols = 4
+rows = math.ceil(num_images / cols)
+
+# For recognition rate calculation
+correct_count = 0
+total_count = 0
+per_person_stats = {person: {'correct': 0, 'total': 0} for person in label_dict.values()}
+
+import matplotlib.pyplot as plt
+plt.figure(figsize=(cols * 6, rows * 6))
+
+for i in range(num_images):
+    xi = X_test[i].reshape(1, -1)
+    y_before_round_rounded, y_after_round, predicted_name = predict(xi)
+
+    # Ground truth
+    true_label = y_test[i]
+    true_name = label_dict[true_label]
+
+    # Update accuracy counters
+    total_count += 1
+    per_person_stats[true_name]['total'] += 1
+
+    if predicted_name == true_name:
+        correct_count += 1
+        per_person_stats[true_name]['correct'] += 1
+
+    # Load the image for display
+    img = Image.open(image_paths[i])
+
+    # Get the image file name
+    image_file_name = os.path.basename(image_paths[i])
+
+    # Format vectors as requested
+    y_before_formatted = np.array2string(y_before_round_rounded, formatter={'float_kind':lambda x: "%.2f" % x})
+    y_after_formatted = np.array2string(y_after_round, separator=' ', formatter={'int_kind':lambda x: "%d" % x})
+
+    text_to_display = (
+        f"{y_before_formatted}\n"
+        f"{y_after_formatted}\n"
+        f"Predicted: {predicted_name}\n"
+        f"True: {true_name}\n"
+        f"Image: {image_file_name}"
+    )
+
+    ax = plt.subplot(rows, cols, i + 1)
+    ax.imshow(img, cmap='gray')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('black')
+        spine.set_linewidth(3)
+    plt.text(0.5, 1.02, text_to_display, ha='center', va='bottom',
+             transform=ax.transAxes, fontsize=10,
+             bbox=dict(facecolor='white', alpha=0.8, edgecolor='black'))
+    ax.axis('off')
+
+plt.tight_layout(pad=3.0)
+plt.subplots_adjust(wspace=0.4, hspace=0.6)
+plt.show()
+
+# Compute and print recognition rates
+overall_accuracy = (correct_count / total_count) * 100 if total_count > 0 else 0
+print(f"\nOverall Recognition Rate: {overall_accuracy:.2f}%")
+
+for person, stats in per_person_stats.items():
+    if stats['total'] > 0:
+        person_accuracy = (stats['correct'] / stats['total']) * 100
+    else:
+        person_accuracy = 0
+    print(f"Recognition Rate for {person}: {person_accuracy:.2f}%")
