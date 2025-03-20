@@ -1,0 +1,227 @@
+#====================================================================================================================
+#                                       TRAINING PROGRAM (40 X 40)
+#====================================================================================================================
+# Import necessary libraries
+import numpy as np                # For numerical computations and array manipulations
+import os                         # For directory and file path management
+from PIL import Image             # For image loading and processing
+from google.colab import drive    # For mounting Google Drive in Google Colab
+import csv                        # For saving weights and biases as CSV
+
+# Step 0: Initialization ============================================================================================
+# Mount Google Drive to access datasets and save outputs
+drive.mount('/content/drive', force_remount=True)  # Use force_remount=True to avoid mounting issues
+
+# Set paths to training dataset and output directory
+training_data_path = '/content/drive/MyDrive/MML_Final_Project/Training_Database_Processed'
+output_save_path = '/content/drive/MyDrive/MML_Final_Project/BPNN_VectorBased_Training Program Output'
+
+# Ensure the output directory exists
+if not os.path.exists(output_save_path):
+    os.makedirs(output_save_path)
+
+# Define image dimensions
+img_height, img_width = 40, 40  # Image size is 40x40 pixels
+
+# Function to load images and labels from the training set (revised to handle categories)
+def load_training_data(training_path):
+    X_train = []
+    y_train = []
+    label_dict = {}  # To map numerical labels to person names
+    label = 0
+
+    image_extensions = ('.png', '.jpg')
+
+    # Iterate over each person folder
+    for person_name in os.listdir(training_path):
+        person_folder = os.path.join(training_path, person_name)
+        if os.path.isdir(person_folder):
+            # Assign a unique label for each person
+            label_dict[label] = person_name
+
+            # Iterate over category folders inside person folder
+            for category_name in os.listdir(person_folder):
+                category_folder = os.path.join(person_folder, category_name)
+                if os.path.isdir(category_folder):
+                    # Load images from this category
+                    for image_name in os.listdir(category_folder):
+                        if not image_name.lower().endswith(image_extensions):
+                            continue
+                        image_path = os.path.join(category_folder, image_name)
+                        try:
+                            img = Image.open(image_path)
+
+                            # Convert to grayscale if not already
+                            if img.mode != 'L':
+                                img = img.convert('L')
+
+                            # Resize image to 40x40 if not already
+                            if img.size != (img_width, img_height):
+                                img = img.resize((img_width, img_height))
+
+                            img_array = np.array(img).flatten() / 255.0  # Normalize pixel values
+
+                            # Check array length
+                            if img_array.shape[0] != img_height * img_width:
+                                print(f"Unexpected array length for image {image_path}")
+                                continue  # Skip this image
+
+                            X_train.append(img_array)
+                            y_train.append(label)
+                        except Exception as e:
+                            print(f"Error processing image {image_path}: {e}")
+            label += 1
+
+    # Convert lists to numpy arrays
+    X_train = np.array(X_train)
+    y_train = np.array(y_train)
+
+    # Save label_dict to a CSV file in Google Drive
+    label_dict_path = os.path.join(output_save_path, 'label_dict.csv')
+    with open(label_dict_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Label', 'Person'])
+        for key, value in label_dict.items():
+            writer.writerow([key, value])
+
+    return X_train, y_train, label_dict
+
+# Step 1: Load the Training Data ============================================================================================
+X_train, y_train, label_dict = load_training_data(training_data_path)
+num_classes = len(label_dict)
+
+# Step 2: Convert Labels to One-Hot Encoding ================================================================================
+def one_hot_encode(labels, num_classes):
+    encoded_labels = np.zeros((labels.size, num_classes))
+    encoded_labels[np.arange(labels.size), labels] = 1
+    return encoded_labels
+
+y_train_encoded = one_hot_encode(y_train, num_classes)
+
+#============================================================================================================================
+# Step 3: Define Learning Parameters and Network Architecture
+#============================================================================================================================
+alpha = 0.2                          # Learning rate between 0.2 and 0.4
+mu = 0.7                             # Momentum term between 0.7 and 0.8
+max_epochs = 30                    # Number of epochs (maximum iterations)
+error_threshold = 0.01               # Error threshold for stopping criteria
+hidden_size = 320                   # Number of neurons in hidden layer (2 times the input size)
+input_size = img_height * img_width  # Number of features (pixels per image)
+output_size = num_classes            # Number of classes (persons)
+#============================================================================================================================
+
+# Step 4: Define Activation Functions =======================================================================================
+def sigmoid(x):
+    """Sigmoid activation function."""
+    return 1 / (1 + np.exp(-x))
+
+def sigmoid_derivative(x):
+    """Derivative of sigmoid activation function."""
+    sig = sigmoid(x)
+    return sig * (1 - sig)
+
+
+# Step 5: Initialize Weights and Biases using Nguyen-Widrow Method ===========================================================
+def nguyen_widrow_init(size_in, size_out):
+    """
+    Nguyen-Widrow initialization for weights.
+    Initializes weights with values between -beta and +beta.
+    """
+    beta = 0.7 * (size_out) ** (1 / size_in)
+    weights = np.random.rand(size_in, size_out) * 2 - 1  # Random weights between -1 and 1
+    for i in range(size_out):
+        norm = np.linalg.norm(weights[:, i])
+        weights[:, i] = beta * weights[:, i] / norm
+    return weights
+
+# Initialize weights and biases
+v = nguyen_widrow_init(input_size, hidden_size)      # Weights between input and hidden layer
+v0 = np.zeros((1, hidden_size))                      # Biases for hidden layer
+w = nguyen_widrow_init(hidden_size, output_size)     # Weights between hidden and output layer
+w0 = np.zeros((1, output_size))                      # Biases for output layer
+
+
+# Step 6: Initialize Previous Weight Updates for Momentum =================================================================
+delta_v_prev = np.zeros_like(v)
+delta_v0_prev = np.zeros_like(v0)
+delta_w_prev = np.zeros_like(w)
+delta_w0_prev = np.zeros_like(w0)
+
+
+# Step 7: Training Loop (Steps 1-9) =======================================================================================
+for epoch in range(max_epochs):
+    total_error = 0
+
+    # Step 2: Shuffle the training data for each epoch
+    indices = np.arange(X_train.shape[0])
+    np.random.shuffle(indices)
+    X_train_shuffled = X_train[indices]
+    y_train_encoded_shuffled = y_train_encoded[indices]
+
+    # Step 2: Iterate through each training pair
+    for p in range(X_train_shuffled.shape[0]):
+        # Step 3: Feedforward - Input Layer
+        xi = X_train_shuffled[p].reshape(1, -1)                    # Input vector
+        ti = y_train_encoded_shuffled[p].reshape(1, -1)            # Target vector
+
+        # Step 4: Feedforward - Hidden Layer
+        z_in = np.dot(xi, v) + v0                                  # Compute input to hidden neurons
+        z = sigmoid(z_in)                                          # Activation of hidden neurons
+
+        # Step 5: Feedforward - Output Layer
+        y_in = np.dot(z, w) + w0                                   # Compute input to output neurons
+        y = sigmoid(y_in)                                          # Activation of output neurons
+
+        # Step 6: Backpropagation - Compute error at output
+        delta_k = (ti - y) * sigmoid_derivative(y_in)              # δk = (tk - yk) * f'(y_ink)
+
+        # Step 7: Backpropagation - Compute error at hidden layer
+        delta_j = np.dot(delta_k, w.T) * sigmoid_derivative(z_in)  # δj = Σδk * wjk * f'(z_inj)
+
+        # Step 8: Update Weights and Biases with Momentum
+        delta_w = alpha * np.dot(z.T, delta_k) + mu * delta_w_prev
+        delta_w0 = alpha * delta_k + mu * delta_w0_prev
+
+        delta_v = alpha * np.dot(xi.T, delta_j) + mu * delta_v_prev
+        delta_v0 = alpha * delta_j + mu * delta_v0_prev
+
+        w += delta_w
+        w0 += delta_w0
+
+        v += delta_v
+        v0 += delta_v0
+
+        # Update previous weight updates for momentum
+        delta_w_prev = delta_w
+        delta_w0_prev = delta_w0
+        delta_v_prev = delta_v
+        delta_v0_prev = delta_v0
+
+        # Step 9: Compute and accumulate error
+        ep = 0.5 * np.sum((ti - y) ** 2)  # Error for this training pair
+        total_error += ep
+
+    # Round total error to two decimal places for readability
+    total_error_rounded = round(total_error, 2)
+
+    # Print the total error for this epoch
+    print(f"Epoch {epoch + 1}/{max_epochs}, Total Error: {total_error_rounded}")
+
+    # Check stopping condition
+    if total_error < error_threshold:
+        print(f"Training completed at epoch {epoch + 1} with total error {total_error_rounded}")
+        break
+
+
+# Step 10: Save Final Weights and Biases to Google Drive as CSV ===========================================================
+def save_array_as_csv(array, filename):
+    np.savetxt(filename, array, delimiter=",", fmt='%.6f')
+
+# Save weights and biases as CSV files
+save_array_as_csv(v, os.path.join(output_save_path, 'v.csv'))
+save_array_as_csv(v0, os.path.join(output_save_path, 'v0.csv'))
+save_array_as_csv(w, os.path.join(output_save_path, 'w.csv'))
+save_array_as_csv(w0, os.path.join(output_save_path, 'w0.csv'))
+
+print("\nTraining complete. Weights and biases have been saved as CSV files to Google Drive at:")
+print(output_save_path)
