@@ -1,0 +1,151 @@
+#====================================================================================================================
+#                                BPNN MATRIX BASED TRAINING PROGRAM (40 X 40)
+#====================================================================================================================
+# Import necessary libraries
+import numpy as np
+import pandas as pd
+import os
+from PIL import Image
+import matplotlib.pyplot as plt
+from sklearn.utils.class_weight import compute_class_weight
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.callbacks import EarlyStopping
+
+from google.colab import drive
+
+# Mount Google Drive
+drive.mount('/content/drive', force_remount=True)
+
+# Define input and output directories
+training_data_path = '/content/drive/MyDrive/MML_Final_Project/Training_Database_Processed'
+model_save_dir = '/content/drive/MyDrive/MML_Final_Project/BPNN_MatrixBased_Training Program Output'
+os.makedirs(model_save_dir, exist_ok=True)
+model_save_path = os.path.join(model_save_dir, 'trained_bpnntf_model.h5')
+label_dict_save_path = os.path.join(model_save_dir, 'label_dict.csv')
+
+# Define image dimensions
+img_height, img_width = 40, 40
+input_size = img_height * img_width  # 1600
+
+#====================================================================================================================
+#                                     CONFIGURATION SECTION
+#====================================================================================================================
+# Editable parameters
+hidden_layer_size = 320          # Number of neurons in the single hidden layer
+dropout_rate = 0.7               # Dropout rate for regularization
+activation_hidden = 'relu'        # Activation function for hidden layer
+activation_output = 'softmax'     # Activation function for output layer
+epochs = 30                      # Number of training epochs
+batch_size = 32                   # Batch size for training
+early_stop_patience = 15          # Patience for early stopping
+#====================================================================================================================
+
+# Define label dictionary as per specified encoding
+label_dict = {
+    0: 'Mirza',
+    1: 'Darrel',
+    2: 'Dipo',
+    3: 'Divo',
+    4: 'Jessy',
+    5: 'Farizi',
+    6: 'Salsa',
+    7: 'Akeyla',
+    8: 'Fabian'
+}
+
+# Create reverse mapping for labels
+person_to_label = {v: k for k, v in label_dict.items()}
+
+# Save label_dict to CSV
+label_df = pd.DataFrame(list(label_dict.items()), columns=['Label', 'Person'])
+label_df.to_csv(label_dict_save_path, index=False)
+print(f"Label dictionary saved to {label_dict_save_path}")
+
+# Function to load images (No conversion or resizing, images are assumed ready)
+def load_images(data_path, person_to_label, img_height=40, img_width=40):
+    X = []
+    y = []
+    image_paths = []
+    image_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif')
+
+    for person_name in os.listdir(data_path):
+        person_folder = os.path.join(data_path, person_name)
+        if not os.path.isdir(person_folder):
+            continue
+
+        for category_name in os.listdir(person_folder):
+            category_folder = os.path.join(person_folder, category_name)
+            if not os.path.isdir(category_folder):
+                continue
+
+            for image_name in os.listdir(category_folder):
+                if not image_name.lower().endswith(image_extensions):
+                    continue
+                image_path = os.path.join(category_folder, image_name)
+                try:
+                    with Image.open(image_path) as img:
+                        img_array = np.array(img).flatten() / 255.0
+                        if img_array.shape[0] != img_height * img_width:
+                            print(f"Skipping {image_path}: Incorrect image size.")
+                            continue
+                        X.append(img_array)
+                        y.append(person_to_label.get(person_name, -1))
+                        image_paths.append(image_path)
+                except Exception as e:
+                    print(f"Error loading {image_path}: {e}")
+
+    X = np.array(X)
+    y = np.array(y)
+    return X, y, image_paths
+
+# Load training data
+X_train, y_train, train_image_paths = load_images(training_data_path, person_to_label, img_height, img_width)
+
+# Filter out any samples with label -1 (if any)
+train_filter = y_train != -1
+X_train, y_train = X_train[train_filter], y_train[train_filter]
+
+# Compute class weights to handle class imbalance
+class_weights = compute_class_weight(class_weight='balanced',
+                                     classes=np.unique(y_train),
+                                     y=y_train)
+class_weights_dict = {i: class_weights[i] for i in range(len(class_weights))}
+print("Class Weights:", class_weights_dict)
+
+# One-hot encode labels
+num_classes = len(label_dict)
+y_train_encoded = to_categorical(y_train, num_classes=num_classes)
+
+# Define the neural network model with one hidden layer
+model = Sequential([
+    Dense(hidden_layer_size, input_dim=input_size, activation=activation_hidden),  # Single Hidden Layer
+    Dropout(dropout_rate),                                                   # Dropout for regularization
+    Dense(num_classes, activation=activation_output)                        # Output Layer
+])
+
+# Compile the model
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+# Display the model summary
+model.summary()
+
+# Define early stopping
+early_stop = EarlyStopping(monitor='loss', patience=early_stop_patience, restore_best_weights=True)
+
+# Train the model
+history = model.fit(X_train, y_train_encoded,
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    class_weight=class_weights_dict,
+                    callbacks=[early_stop],
+                    verbose=1)
+
+# Save the trained model
+model.save(model_save_path)
+print(f"Model saved to {model_save_path}")
